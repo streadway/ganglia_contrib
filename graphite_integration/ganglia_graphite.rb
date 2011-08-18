@@ -48,11 +48,10 @@ dest =
 doc = Nokogiri::XML source
 
 doc.xpath("//METRIC[@TYPE!='string']").each do |metric|
-  path = metric.xpath("ancestor-or-self::*").                                 # All parents
-    map        { |node| node["NAME"] }.                                       # Use root/grid/cluster/host/metric tree
-    compact.                                                                  # Remove nameless nodes (root)
-    inject([]) { |parts, name| parts << name.gsub("."+parts.last.to_s, '') }. # Remove redundant parts of the name
-    map        { |name| name.gsub(/[ .]/, '_') }.                             # Normalize names to graphite's expectation
+  path = metric.xpath("ancestor-or-self::*").     # All parents
+    map        { |node| node["NAME"] }.           # Use root/grid/cluster/host/metric tree
+    compact.                                      # Remove nameless nodes (root)
+    map        { |name| name.gsub(/[ .]/, '_') }. # Transform graphite's special characters
     join(".")
 
   # Use ganglia's value, ignoring the units
@@ -61,7 +60,7 @@ doc.xpath("//METRIC[@TYPE!='string']").each do |metric|
   # Use ganglia's reported time so our writes are idempotent
   time = metric.parent["REPORTED"]
 
-  dest.puts("%s %s %s" % [ path, value, time ])
+  dest.write("%s %s %s\n" % [ path, value, time ])
 end
 
 source.close
