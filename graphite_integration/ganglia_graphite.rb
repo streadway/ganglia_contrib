@@ -3,59 +3,66 @@
 #################################################################################
 # Parse Ganglia XML stream and send metrics to Graphite
 # License: Same as Ganglia
-# Author: Vladimir Vuksan
+# Author: Vladimir Vuksan, Sean Treadway
 # Modified from script written by: Kostas Georgiou
 #################################################################################
-require "rexml/document"
+require "nokogiri"
 require 'socket'
 
-# Adjust to the appropriate values
-ganglia_hostname = 'localhost'
-ganglia_port = 8651
-graphite_host = 'localhost'
-graphite_port = 2003
-Debug = false
+ganglia, graphite = ARGV
 
-begin
-  # Open up a socket to gmond
-  file = TCPSocket.open(ganglia_hostname, ganglia_port)
-  # Open up a socke to graphite
-  graphite = TCPSocket.open(graphite_host, graphite_port)
-  # We need current time stamp in UNIX time 
-  now = Time.now.to_i
-  # Parse the XML we got from gmond
-  doc = REXML::Document.new file
-  #doc.write( $stdout, 0 )
-
-  grid=nil
-  doc.elements.each("GANGLIA_XML/GRID") { |element| 
-   grid=element.attributes["NAME"]
-  }
-  puts "GRID: #{grid}\n" if Debug
-
-  cluster=nil
-  doc.elements.each("GANGLIA_XML/GRID/CLUSTER") { |element| 
-   cluster=element.attributes["NAME"] 
-    puts "CLUSTER: #{cluster}\n" if Debug
-
-    doc.elements.each("GANGLIA_XML/GRID[@NAME='#{grid}']/CLUSTER[@NAME='#{cluster}']/HOST") { |host|
-      metric_prefix=host.attributes["NAME"].gsub(".", "_")
-      host.elements.each("METRIC") { |metric|
-        # Set metric prefix to the host name. Graphite uses dots to separate subtrees
-        # therefore we have to change dots in hostnames to _
-        # Do substitution of whitespace after XML parsing to avoid problems with 
-        # pre-exiting whitespace in GRID / CLUSTER names in XML. 
-        grid.gsub!(/\W/, "_")
-        cluster.gsub!(/\W/, "_")
-        if metric.attributes["TYPE"] != "string"                     
-          graphite.puts "#{grid}.#{cluster}.#{metric_prefix}.#{metric.attributes["NAME"]} #{metric.attributes["VAL"]} #{now}\n" if !Debug
-          puts "#{grid}.#{cluster}.#{metric_prefix}.#{metric.attributes["NAME"]} #{metric.attributes["VAL"]} #{now}\n" if Debug
-        end
-      }
-    }
-  }
-
-  graphite.close()
-  file.close()
-rescue
+if !ganglia || !graphite
+  puts "Usage: #{$0} ganglia.host:port graphite.host:port"
+  puts "  Optionally use '-' for either ganglia or graphite to use"
+  puts "  stdin or stdout respectively"
+  puts
+  puts "  Example:"
+  puts "    bundle install # once"
+  puts "    bundle exec #{$0} ganglia -"
+  exit 1
 end
+
+ganglia_hostname, ganglia_port = ganglia.to_s.split(":")
+ganglia_port ||= 8651
+
+graphite_host, graphite_port = graphite.to_s.split(":")
+graphite_port ||= 2003
+
+# Open up a socket to gmond
+source =
+  if ganglia_hostname == '-'
+    $stdin
+  else
+    TCPSocket.open(ganglia_hostname, ganglia_port.to_i)
+  end
+
+# Open up a socket to graphite
+dest =
+  if graphite_host == "-"
+    $stdout
+  else
+    TCPSocket.open(graphite_host, graphite_port.to_i)
+  end
+
+# Parse the XML we got from gmond
+doc = Nokogiri::XML source
+
+doc.xpath("//METRIC[@TYPE!='string']").each do |metric|
+  path = metric.xpath("ancestor-or-self::*").                                 # All parents
+    map        { |node| node["NAME"] }.                                       # Use root/grid/cluster/host/metric tree
+    compact.                                                                  # Remove nameless nodes (root)
+    inject([]) { |parts, name| parts << name.gsub("."+parts.last.to_s, '') }. # Remove redundant parts of the name
+    map        { |name| name.gsub(/[ .]/, '_') }.                             # Normalize names to graphite's expectation
+    join(".")
+
+  # Use ganglia's value, ignoring the units
+  value = metric["VAL"]
+
+  # Use ganglia's reported time so our writes are idempotent
+  time = metric.parent["REPORTED"]
+
+  dest.puts("%s %s %s" % [ path, value, time ])
+end
+
+source.close
+dest.close
