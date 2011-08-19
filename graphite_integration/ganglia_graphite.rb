@@ -47,6 +47,7 @@ dest =
 # Parse the XML we got from gmond
 doc = Nokogiri::XML source
 
+# Expect format of "/GANGLIA_XML/GRID/CLUSTER/HOST/METRIC"
 doc.xpath("//METRIC[@TYPE!='string']").each do |metric|
   path = metric.xpath("ancestor-or-self::*").     # All parents
     map        { |node| node["NAME"] }.           # Use root/grid/cluster/host/metric tree
